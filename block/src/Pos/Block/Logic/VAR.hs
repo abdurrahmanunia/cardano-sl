@@ -1,4 +1,5 @@
--- | Verify|apply|rollback logic.
+-- | Center of where block verification/application/rollback happens.
+-- Unifies VAR for all components (txp, dlg, ssc, us).
 
 module Pos.Block.Logic.VAR
        ( verifyBlocksPrefix
@@ -28,21 +29,23 @@ import           Pos.Block.Logic.Internal (BypassSecurityCheck (..), MonadBlockA
                                            applyBlocksUnsafe, normalizeMempool,
                                            rollbackBlocksUnsafe, toSscBlock, toTxpBlock,
                                            toUpdateBlock)
-import           Pos.Block.Slog (ShouldCallBListener (..), mustDataBeKnown, slogVerifyBlocks)
+import           Pos.Block.Slog (ShouldCallBListener (..), mustDataBeKnown)
 import           Pos.Block.Types (Blund, Undo (..))
 import           Pos.Core (Block, HeaderHash, epochIndexL, headerHashG, prevBlockL)
 import qualified Pos.DB.GState.Common as GS (getTip)
-import           Pos.Delegation.Logic (dlgVerifyBlocks)
 import           Pos.Lrc.Worker (LrcModeFull, lrcSingleShot)
-import           Pos.Ssc (sscVerifyBlocks)
-import           Pos.Txp.Settings (TxpGlobalSettings (..))
 import qualified Pos.Update.DB as GS (getAdoptedBV)
-import           Pos.Update.Logic (usVerifyBlocks)
 import           Pos.Update.Poll (PollModifier)
 import           Pos.Util (neZipWith4, spanSafe, _neHead)
 import           Pos.Util.Chrono (NE, NewestFirst (..), OldestFirst (..), toNewestFirst,
                                   toOldestFirst)
 import           Pos.Util.Util (HasLens (..))
+
+import           Pos.Block.Slog.Logic (slogVerifyBlocks)
+import           Pos.Delegation.Logic (dlgVerifyBlocks)
+import           Pos.Ssc.Logic (sscVerifyBlocks)
+import           Pos.Txp.Settings (TxpGlobalSettings (TxpGlobalSettings, tgsVerifyBlocks))
+import           Pos.Update.Logic (usVerifyBlocks)
 
 -- -- CHECK: @verifyBlocksLogic
 -- -- #txVerifyBlocks
@@ -100,11 +103,11 @@ type BlockLrcMode ctx m = (MonadBlockApply ctx m, LrcModeFull ctx m)
 -- | Applies blocks if they're valid. Takes one boolean flag
 -- "rollback". Returns header hash of last applied block (new tip) on
 -- success. Failure behaviour depends on "rollback" flag. If it's on,
--- all blocks applied inside this function will be rollbacked, so it
+-- all blocks applied inside this function will be rolled back, so it
 -- will do effectively nothing and return 'Left error'. If it's off,
--- it will try to apply as much blocks as it's possible and return
--- header hash of new tip. It's up to caller to log warning that
--- partial application happened.
+-- it will try to apply as many blocks as it's possible and return
+-- header hash of new tip. It's up to the caller to log a warning that
+-- partial application has occurred.
 verifyAndApplyBlocks
     :: forall ctx m. (BlockLrcMode ctx m, MonadMempoolNormalization ctx m)
     => Bool -> OldestFirst NE Block -> m (Either ApplyBlocksException HeaderHash)
@@ -187,7 +190,7 @@ verifyAndApplyBlocks rollback blocks = runExceptT $ do
                             spanEpoch (OldestFirst (genesis:|xs))
 
 -- | Apply definitely valid sequence of blocks. At this point we must
--- have verified all predicates regarding block (including txs and ssc
+-- have verified all predicates regarding block (including txp and ssc
 -- data checks). We also must have taken lock on block application
 -- and ensured that chain is based on our tip. Blocks will be applied
 -- per-epoch, calculating lrc when needed if flag is set.
