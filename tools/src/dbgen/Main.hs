@@ -25,7 +25,7 @@ import           Pos.Ssc.SscAlgo (SscAlgo (..))
 import           Pos.Util.JsonLog (jsonLogConfigFromHandle)
 import           Pos.Util.UserSecret (usVss)
 import           Pos.Wallet.SscType (WalletSscType)
-import           Pos.Wallet.Web.Mode (AddrCIdHashes (..), WalletWebModeContext (..))
+import           Pos.Wallet.Web.Mode (WalletWebModeContext (..))
 import           Pos.Wallet.Web.State.Acidic (closeState, openState)
 import           Pos.Wallet.Web.State.State (WalletDB)
 import           Pos.WorkMode (RealModeContext (..))
@@ -112,7 +112,6 @@ walletRunner
 walletRunner confOpts dbs secretKeyPath ws act = runProduction $ do
     wwmc <- WalletWebModeContext <$> pure ws
                                  <*> newTVarIO def
-                                 <*> (AddrCIdHashes <$> (newIORef mempty))
                                  <*> newRealModeContext dbs confOpts secretKeyPath
     runReaderT act wwmc
 
