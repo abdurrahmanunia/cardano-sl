@@ -151,6 +151,7 @@ operations between the set of pending transactions and the set of transactions
 in a block.
 
 \section{Wallet operations}
+\label{sec:wallet_operations}
 
 There are only a small number of wallet operations of interest. We can:
 \begin{itemize}
@@ -398,6 +399,7 @@ other operators.
 
 
 \subsection{Invariants}
+\label{sec:invariants}
 
 We would hope to prove the following invariants are true for all wallet values
 
@@ -786,6 +788,122 @@ resolved addresses must be listed alongside the transaction IDs in the
 transaction inputs themselves. This would effectively be a form of caching
 in the blockchain, and may be beneficial elsewhere also.
 \end{itemize}
+
+\section{Rollback}
+
+The possible presence of forks in the blockchain means that we may occassionally
+have to roll back and ``undo'' calls to $\mathsf{applyBlock}$, reverting to an
+older version of the UTxO. We should however not simply revert to an older
+version of the entire wallet state, because any pending transactions may still
+make it into the block chain (indeed, may already have made it into the fork
+that we are transitioning to).
+
+\subsection{Specification}
+
+Before revisiting performance and prefiltering, let's first consider what
+the specification of rollback should be.
+%
+\begin{align*}
+& w \in \mathsf{Wallet} = \mathsf{Utxo} \times [\mathsf{Utxo}] \times \mathsf{Pending} \\
+& \mathsf{applyBlock} ~ b ~ (\mathit{utxo}, ~ \mathit{checkpoints}, ~ \mathit{pending}) = \\
+& \qquad ( \mathsf{updateUTxO} ~ b ~ \mathit{utxo}
+         , ~ \mathit{utxo} : \mathit{checkpoints}
+         , ~ \mathsf{updatePending} ~ b ~ \mathit{pending}
+         ) \\
+& \mathsf{rollback} ~ (\_ ~, ~ \mathit{utxo} : \mathit{checkpoints}, \mathit{pending}) =
+     ( \mathit{utxo}, \mathit{checkpoints}, \mathit{pending} )
+\end{align*}
+%
+The definition of $\mathsf{newPending}$ remains unchanged, as do the definitions
+of $\mathsf{updateUTxO}$ and $\mathsf{updatePending}$.
+
+\subsection{Ramifications}
+
+The most important consequence of introducing rollbacks is that invariant
+\eqref{txins_in_dom_utxo}, which states that
+%
+\begin{equation*}
+\mathsf{txins} ~ pending \subseteq \dom utxo
+\end{equation*}
+%
+may now be violated. This needs careful consideration.
+
+First, we were using this invariant as an indirect way of stating that there
+can be no ``dependent'' transactions (Section~\ref{sec:invariants}). We can
+state this more directly as
+%
+\begin{equation} \label{no_dep_trans}
+\mathsf{txins} ~ \mathit{pending} \cap \dom (\mathsf{txouts} ~ \mathit{pending}) = \emptyset
+\end{equation}
+%
+Clearly, invariant~\eqref{no_dep_trans} still holds even in the presence of
+rollbacks, since it is defined purely in terms of $\mathit{pending}$ which is
+not changed in $\mathsf{rollback}$. \todo{We may want to move this invariant to
+the earlier section and then here simply state that it still holds.}
+
+The definitions of $\mathsf{available}$ and $\mathsf{change}$ can remain unchanged
+%
+\begin{equation}
+\begin{split}
+\mathsf{available} ~ (utxo, ~ \_ ~, ~ pending) & = \mathsf{txins} ~ pending \subtractdom utxo \\
+\mathsf{change} ~ (utxo, ~ \_ ~, ~ pending) & =
+    \mathsf{txouts} ~ pending \restrictrange \mathsf{TxOut_{ours}} \\
+\end{split}
+\end{equation}
+%
+In $\mathsf{available}$ it makes no difference if  $\mathit{pending}$ contains
+inputs that don't exist in the UTxO (this is a direct consequence of
+lemma \eqref{subtractdom_dom}). The argument for $\mathsf{change}$ is a bit more
+subtle. We are computing the change we get back from our transactions \emph{once
+they have been incorporated into the blockchain}. While it may be true that
+after a rollback $\mathit{pending}$ contains transactions whose inputs are not
+yet available in the blockchain, it is nonetheless true that \emph{when} our
+transactions have been included into the blockchain, their antecedants must have
+been as well, and the change we get back is indeed as computed by
+$\mathsf{change}$.
+
+It does mean we need to be more careful with the interpretation of
+$\mathsf{change}$ (and hence the interpretation of $\mathsf{total}$), and
+therefore more careful with presenting $\mathsf{change}$ or $\mathsf{total}$ to
+the user. Consider the situation where in some block $b$ a user receives a large
+sum of money through transaction $t_1$, and the user then submits a transaction
+$t_2$ that transfers a small percentage of that large sum to someone else. Then
+the $\mathsf{change}$ would be a large figure. If we now roll back block $b$, we
+end up with a UTxO in which the user never received the large sum of money in
+the first place. It is still true that by the time $t_2$ is included into the
+blockchain, transaction $t_1$ must also have been, but this is somewhat
+tentative.
+
+It is of course possible that such antecedent transactions (like $t_1$ in the
+example above) \emph{never} make it into the new fork, in which case the user's
+transaction $t_2$ should eventually be removed from $\mathit{pending}$. This
+problem may arise even without rollbacks, however, and cannot be solved until we
+introduce a TTL value for transactions.
+
+The remainder of the definitions from Section~\ref{sec:wallet_operations} can
+remain unchanged, with the side condition to $\mathsf{newPending}$ continuing to
+ensure that we cannot introduce dependent pending transactions
+(invariant~\eqref{no_dep_trans}).
+
+TODO: Sections 4, 5, 6.
+
+\subsection{Memory Requirements}
+
+Obviously, storing all checkpoints of the UTxO leads to unbounded memory usage.
+Thankfully however the blockchain protocol defines a ``security parameter''
+$k$, which guarantees that we will never have to roll back past $k$ slots. This
+means that we do not have to store more than $k$ checkpoints. Currently, $k$ is
+set to 2000; for a typical user, the UTxO will not be large and keeping 2000
+UTxO values in memory will not be a huge deal.
+
+For nodes where the UTxO may be large (for instance on exchange nodes),  we can
+also give a precise upper bound on the memory requirements. Instead of storing
+$k$ UTxO checkpoints, it would also suffice to store the  UTxO as it was $k$
+slots ago, and store all $k$ blocks since the last checkpoint. Since a block has
+a maximum size of 2 MB, this means we need to store at most 4 GB of data in
+memory, which would not be a huge deal for exchange nodes. (Some
+combination of storing blocks and checkpoints is probably the best option;
+this is an engineering question.)
 
 \section{Transaction input selection and UTxO maintenance}
 
